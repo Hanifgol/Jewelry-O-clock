@@ -1,7 +1,11 @@
-import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
-import { getAuth, Auth } from "firebase/auth";
-import { getAnalytics, Analytics } from "firebase/analytics";
-import { getFirestore, Firestore, initializeFirestore } from "firebase/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import type { FirebaseApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
+import type { Auth } from "firebase/auth";
+import { getAnalytics } from "firebase/analytics";
+import type { Analytics } from "firebase/analytics";
+import { getFirestore, initializeFirestore } from "firebase/firestore";
+import type { Firestore } from "firebase/firestore";
 
 // Defensively definition for environment variables or fallbacks
 const firebaseConfig = {
