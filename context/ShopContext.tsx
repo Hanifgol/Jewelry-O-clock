@@ -36,32 +36,18 @@ interface ShopContextType {
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
 
-// Helper to sanitize Firestore data (remove circular refs, convert timestamps)
-// Now uses a WeakSet to track seen objects and prevent infinite recursion/circular JSON errors
+// Helper to sanitize Firestore data
 const sanitizeData = (data: any, seen = new WeakSet()): any => {
   if (data === null || typeof data !== 'object') return data;
-  
-  // If we've seen this object before, return a placeholder to break the cycle
   if (seen.has(data)) return '[Circular]';
   seen.add(data);
-
   if (Array.isArray(data)) return data.map(item => sanitizeData(item, seen));
-  
-  // Handle Firestore Timestamps
   if (data && typeof data.toMillis === 'function') {
     return new Date(data.toMillis()).toISOString();
   }
-  
-  // Handle Firestore References (Circular structure!)
-  // We check safely for properties that might indicate a Firestore reference
   try {
-    if (data.firestore && data.path) {
-      return data.path; // Keep the path string, discard the complex object
-    }
-  } catch (e) {
-    // Ignore access errors
-  }
-
+    if (data.firestore && data.path) return data.path;
+  } catch (e) { /* ignore */ }
   const sanitized: any = {};
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
@@ -80,6 +66,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Fetch Products from Firestore
   useEffect(() => {
+    // Safety check: if db failed to init in services/firebase.ts
+    if (!db) {
+      console.warn("Firestore not initialized. Using offline fallback.");
+      setProducts(INITIAL_PRODUCTS);
+      setLoading(false);
+      return;
+    }
+
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
       const productsData = snapshot.docs.map(doc => {
         const rawData = doc.data();
@@ -98,7 +92,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     }, (error) => {
       console.error("Error fetching products:", error);
-      // On error (e.g. offline), keep using what we have or fall back
       if (products.length === 0) setProducts(INITIAL_PRODUCTS);
       setLoading(false);
     });
@@ -116,7 +109,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (savedOrders) setOrders(JSON.parse(savedOrders));
     } catch (e) {
       console.error("Failed to parse localStorage data", e);
-      // Reset if corrupt
       setCart([]);
       setOrders([]);
     }
@@ -124,7 +116,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     try {
-      // Ensure we sanitize before stringifying to catch any lingering circular refs
       const cleanCart = sanitizeData(cart);
       localStorage.setItem('jo_cart', JSON.stringify(cleanCart));
     } catch (e) {
@@ -147,10 +138,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCart(prev => {
       const existing = prev.find(item => item.cartItemId === cartItemId);
       if (existing) {
-        // Check stock
         const availableStock = variant ? variant.stock : product.stock;
         if (existing.quantity >= availableStock) {
-           return prev; // Or show error toast
+           return prev; 
         }
         return prev.map(item => 
           item.cartItemId === cartItemId 
@@ -158,15 +148,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
             : item
         );
       }
-      // Ensure the product object stored in cart is clean
-      // We pass a new Set for each call to avoid carrying over state
       const sanitizedProduct = sanitizeData(product);
       return [...prev, { 
         ...sanitizedProduct, 
         cartItemId,
         quantity: 1,
         selectedVariant: variant,
-        // Override base price with variant price if exists
         price: variant ? variant.price : product.price 
       }];
     });
@@ -181,17 +168,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       removeFromCart(cartItemId);
       return;
     }
-    
-    // Check stock limit
     const item = cart.find(i => i.cartItemId === cartItemId);
     if (item) {
        const availableStock = item.selectedVariant ? item.selectedVariant.stock : item.stock;
-       if (quantity > availableStock) {
-          // Could add a toast notification here
-          return;
-       }
+       if (quantity > availableStock) return;
     }
-
     setCart(prev => prev.map(item => item.cartItemId === cartItemId ? { ...item, quantity } : item));
   };
 
@@ -202,10 +183,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Firestore Write Operations
   const addProduct = async (product: Product) => {
+    if (!db) throw new Error("Database connection not available");
     try {
       const { id, ...data } = product;
-      // We don't sanitize here because we WANT to save rich types to DB if present,
-      // but 'product' comes from our form which is plain JSON.
       if (id) {
          await setDoc(doc(db, 'products', id), data);
       } else {
@@ -218,6 +198,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateProduct = async (updatedProduct: Product) => {
+    if (!db) throw new Error("Database connection not available");
     try {
       const { id, ...data } = updatedProduct;
       const productRef = doc(db, 'products', id);
@@ -229,6 +210,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteProduct = async (productId: string) => {
+    if (!db) throw new Error("Database connection not available");
     try {
       await deleteDoc(doc(db, 'products', productId));
     } catch (error) {
@@ -238,10 +220,10 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const placeOrder = async (details: { userId: string; name: string; email: string; address: string; paymentId: string }) => {
+    if (!db) throw new Error("Database connection not available");
+    
     const now = new Date().toISOString();
     const newOrderRef = doc(collection(db, 'orders'));
-    
-    // Create a deep copy of cart items to ensure we don't have references to state that might change
     const orderItems = sanitizeData(cart);
 
     const order: Order = {
@@ -262,10 +244,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       await runTransaction(db, async (transaction) => {
-        // 1. Read all product docs to ensure up-to-date stock
         const productReads = await Promise.all(cart.map(item => transaction.get(doc(db, 'products', item.id))));
         
-        // 2. Validate Stock
         for (let i = 0; i < cart.length; i++) {
           const item = cart[i];
           const productDoc = productReads[i];
@@ -289,12 +269,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // 3. Write Order
-        // Ensure we write a clean object to Firestore as well, although Firestore SDK handles most things.
-        // It's mostly localStorage that chokes on circular refs.
         transaction.set(newOrderRef, order);
 
-        // 4. Reduce Stock
         for (let i = 0; i < cart.length; i++) {
            const item = cart[i];
            const productDoc = productReads[i];
@@ -312,7 +288,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       });
 
-      // Transaction successful - update local state
       setOrders(prev => [order, ...prev]);
       setLastOrder(order);
       clearCart();
